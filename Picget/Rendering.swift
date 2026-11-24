@@ -127,6 +127,7 @@ final class WidgetCanvas: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.masksToBounds = true
+        layer?.cornerCurve = .continuous
         picture.contentsGravity = .resize
         layer?.addSublayer(picture)
         registerForDraggedTypes([.fileURL])

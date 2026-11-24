@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 actor Assets {
     static let localLimit = 100 * 1024 * 1024
     static let remoteLimit = 25 * 1024 * 1024
-    let directory: URL
+    nonisolated let directory: URL
     let staging: URL
 
     init(root: URL) {

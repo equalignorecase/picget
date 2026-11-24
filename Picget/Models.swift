@@ -13,7 +13,7 @@ struct Widget: Codable, Identifiable {
     var display: String?
     var relativeOrigin: CGPoint?
     var opacity = 1.0
-    var radius = 0.0
+    var radius = 22.0
     var mode = ContentMode.fit
     var zoom = 1.0
     var cropX = 0.0
