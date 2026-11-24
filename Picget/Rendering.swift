@@ -120,7 +120,39 @@ final class WidgetCanvas: NSView {
     var editing = false
     var geometryChanged: ((CGRect) -> Void)?
     var dropped: ((URL) -> Void)?
-    private var anchor: (location: CGPoint, frame: CGRect, resizing: Bool)?
+
+    private struct ResizeHandle: OptionSet {
+        let rawValue: Int
+        static let left   = ResizeHandle(rawValue: 1 << 0)
+        static let right  = ResizeHandle(rawValue: 1 << 1)
+        static let top    = ResizeHandle(rawValue: 1 << 2)
+        static let bottom = ResizeHandle(rawValue: 1 << 3)
+
+        static let topLeft: ResizeHandle = [.top, .left]
+        static let topRight: ResizeHandle = [.top, .right]
+        static let bottomLeft: ResizeHandle = [.bottom, .left]
+        static let bottomRight: ResizeHandle = [.bottom, .right]
+    }
+
+    private var anchor: (location: CGPoint, frame: CGRect, handle: ResizeHandle)?
+
+    private static let nwseCursor: NSCursor = {
+        let sel = Selector(("_windowResizeNorthWestSouthEastCursor"))
+        if NSCursor.responds(to: sel),
+           let cursor = NSCursor.perform(sel)?.takeUnretainedValue() as? NSCursor {
+            return cursor
+        }
+        return .arrow
+    }()
+
+    private static let neswCursor: NSCursor = {
+        let sel = Selector(("_windowResizeNorthEastSouthWestCursor"))
+        if NSCursor.responds(to: sel),
+           let cursor = NSCursor.perform(sel)?.takeUnretainedValue() as? NSCursor {
+            return cursor
+        }
+        return .arrow
+    }()
 
     init(settings: Widget) {
         self.settings = settings
@@ -138,6 +170,44 @@ final class WidgetCanvas: NSView {
     override func layout() {
         super.layout()
         layoutPicture()
+        window?.invalidateCursorRects(for: self)
+    }
+
+    private func handle(at point: CGPoint) -> ResizeHandle {
+        let margin: CGFloat = 14
+        let onLeft = point.x <= margin
+        let onRight = point.x >= bounds.maxX - margin
+        let onBottom = point.y <= margin
+        let onTop = point.y >= bounds.maxY - margin
+
+        var result = ResizeHandle()
+        if onLeft { result.insert(.left) }
+        if onRight { result.insert(.right) }
+        if onBottom { result.insert(.bottom) }
+        if onTop { result.insert(.top) }
+        return result
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard editing || !settings.locked else { return }
+
+        let margin: CGFloat = 14
+        let w = bounds.width
+        let h = bounds.height
+        guard w > margin * 2, h > margin * 2 else { return }
+
+        // Corners
+        addCursorRect(CGRect(x: 0, y: 0, width: margin, height: margin), cursor: Self.neswCursor) // Bottom-left
+        addCursorRect(CGRect(x: w - margin, y: 0, width: margin, height: margin), cursor: Self.nwseCursor) // Bottom-right
+        addCursorRect(CGRect(x: 0, y: h - margin, width: margin, height: margin), cursor: Self.nwseCursor) // Top-left
+        addCursorRect(CGRect(x: w - margin, y: h - margin, width: margin, height: margin), cursor: Self.neswCursor) // Top-right
+
+        // Edges
+        addCursorRect(CGRect(x: margin, y: 0, width: w - margin * 2, height: margin), cursor: .resizeUpDown) // Bottom
+        addCursorRect(CGRect(x: margin, y: h - margin, width: w - margin * 2, height: margin), cursor: .resizeUpDown) // Top
+        addCursorRect(CGRect(x: 0, y: margin, width: margin, height: h - margin * 2), cursor: .resizeLeftRight) // Left
+        addCursorRect(CGRect(x: w - margin, y: margin, width: margin, height: h - margin * 2), cursor: .resizeLeftRight) // Right
     }
 
     func layoutPicture() {
@@ -169,19 +239,49 @@ final class WidgetCanvas: NSView {
     override func mouseDown(with event: NSEvent) {
         guard editing || !settings.locked, let window else { return }
         let point = convert(event.locationInWindow, from: nil)
-        anchor = (NSEvent.mouseLocation, window.frame, point.x > bounds.maxX - 18 && point.y < 18)
+        let matchedHandle = handle(at: point)
+        anchor = (NSEvent.mouseLocation, window.frame, matchedHandle)
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard let anchor, let window else { return }
         let delta = NSEvent.mouseLocation - anchor.location
         var frame = anchor.frame
-        if anchor.resizing {
-            frame.size.width = max(48, frame.width + delta.x)
-            frame.size.height = settings.aspectLocked
-                ? max(48, frame.width * anchor.frame.height / anchor.frame.width)
-                : max(48, frame.height - delta.y)
-            frame.origin.y = anchor.frame.maxY - frame.height
+
+        if !anchor.handle.isEmpty {
+            let initialAspectRatio = anchor.frame.width / max(1, anchor.frame.height)
+
+            // Horizontal resize
+            if anchor.handle.contains(.right) {
+                frame.size.width = max(48, anchor.frame.width + delta.x)
+            } else if anchor.handle.contains(.left) {
+                let newWidth = max(48, anchor.frame.width - delta.x)
+                frame.origin.x = anchor.frame.maxX - newWidth
+                frame.size.width = newWidth
+            }
+
+            // Vertical resize
+            if anchor.handle.contains(.bottom) {
+                let newHeight = max(48, anchor.frame.height - delta.y)
+                frame.origin.y = anchor.frame.maxY - newHeight
+                frame.size.height = newHeight
+            } else if anchor.handle.contains(.top) {
+                frame.size.height = max(48, anchor.frame.height + delta.y)
+            }
+
+            // Aspect lock constraint
+            if settings.aspectLocked {
+                if anchor.handle.contains(.left) || anchor.handle.contains(.right) {
+                    let targetHeight = max(48, frame.size.width / initialAspectRatio)
+                    if anchor.handle.contains(.bottom) {
+                        frame.origin.y = anchor.frame.maxY - targetHeight
+                    }
+                    frame.size.height = targetHeight
+                } else if anchor.handle.contains(.top) || anchor.handle.contains(.bottom) {
+                    let targetWidth = max(48, frame.size.height * initialAspectRatio)
+                    frame.size.width = targetWidth
+                }
+            }
         } else {
             frame.origin.x += delta.x
             frame.origin.y += delta.y
