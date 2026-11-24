@@ -1,7 +1,7 @@
 import Foundation
 import CoreGraphics
 
-enum ContentMode: String, Codable, CaseIterable { case fit, fill, crop }
+enum ContentMode: String, Codable, CaseIterable { case fit, fill, crop, stretch }
 enum PlaybackMode: String, Codable, CaseIterable { case original, capped, visible, paused, firstFrame }
 enum PowerMode: String, CaseIterable { case off, on, system }
 
@@ -27,6 +27,21 @@ struct Widget: Codable, Identifiable {
     var created = Date()
     var modified = Date()
     var remote: URL?
+
+    static func resized(_ size: CGSize, to value: Double, alongWidth: Bool, locked: Bool, limit: CGSize) -> CGSize {
+        guard value.isFinite, size.width > 0, size.height > 0 else { return size }
+        let current = alongWidth ? size.width : size.height
+        if locked {
+            let maximum = min(limit.width / size.width, limit.height / size.height)
+            let minimum = min(maximum, max(48 / size.width, 48 / size.height))
+            let scale = min(maximum, max(minimum, value / current))
+            return CGSize(width: size.width * scale, height: size.height * scale)
+        }
+        var result = size
+        if alongWidth { result.width = min(limit.width, max(48, value)) }
+        else { result.height = min(limit.height, max(48, value)) }
+        return result
+    }
 
     static func maximumRadius(in size: CGSize) -> Double {
         max(0, min(size.width, size.height) / 2)

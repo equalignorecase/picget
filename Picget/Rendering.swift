@@ -84,7 +84,8 @@ final class DesktopWindow: NSPanel {
         hasShadow = false
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
-        collectionBehavior = [.managed, .ignoresCycle, .fullScreenNone]
+        // Keep the widget in place during Show Desktop.
+        collectionBehavior = [.stationary, .ignoresCycle, .fullScreenNone]
         contentView = canvas
     }
 
@@ -144,6 +145,10 @@ final class WidgetCanvas: NSView {
         defer { CATransaction.commit() }
         layer?.cornerRadius = settings.effectiveRadius(in: bounds.size)
         guard imageSize.width > 0, imageSize.height > 0, bounds.width > 0, bounds.height > 0 else { return }
+        if settings.mode == .stretch {
+            picture.frame = bounds
+            return
+        }
         let horizontal = bounds.width / imageSize.width
         let vertical = bounds.height / imageSize.height
         let scale = settings.mode == .fit ? min(horizontal, vertical) : max(horizontal, vertical)

@@ -191,9 +191,9 @@ final class Library: NSObject, ObservableObject {
         saveSoon()
     }
 
-    func thumbnail(_ id: UUID) async -> CGImage? {
+    func thumbnail(_ id: UUID, pixels: Int) async -> CGImage? {
         guard let asset = configuration.assets[id] else { return nil }
-        return try? await decoder.decode(asset: asset, directory: assetDirectory, pixels: 128, index: 0)
+        return try? await decoder.decode(asset: asset, directory: assetDirectory, pixels: pixels, index: 0)
     }
 
     func cancelImport() { importTask?.cancel() }

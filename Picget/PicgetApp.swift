@@ -42,7 +42,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let library = Library(root: root)
         self.library = library
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        status?.button?.image = NSImage(systemSymbolName: "photo.on.rectangle", accessibilityDescription: "Picget")
+        if let url = Bundle.main.url(forResource: "Picget", withExtension: "icns"),
+           let icon = NSImage(contentsOf: url) {
+            icon.size = NSSize(width: 18, height: 18)
+            status?.button?.image = icon
+        } else {
+            status?.button?.image = NSImage(systemSymbolName: "photo.on.rectangle", accessibilityDescription: "Picget")
+        }
+        status?.button?.setAccessibilityLabel("Picget")
         let menu = NSMenu()
         for (title, selector) in [
             ("Add Widget…", #selector(add)), ("Manage Widgets", #selector(manage)),
@@ -177,30 +184,18 @@ struct Management: View {
     let setStandard: (Bool) -> Void
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(Page.allCases, id: \.self) { page in
-                    Button { navigation.page = page } label: {
-                        Label(tr(page.rawValue), systemImage: page == .widgets ? "photo.on.rectangle" :
-                                page == .settings ? "gearshape" : "info.circle")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(7)
-                            .background(navigation.page == page ? Color.accentColor.opacity(0.16) : Color.clear,
-                                        in: RoundedRectangle(cornerRadius: 6))
-                    }.buttonStyle(.plain)
-                }
-                Spacer()
-            }
-            .padding(12)
-            .frame(width: 150)
-            .background(.quaternary.opacity(0.5))
+        VStack(spacing: 0) {
+            toolbar
             Divider()
             switch navigation.page {
             case .widgets: widgets
             case .settings: Preferences(setStandard: setStandard)
             case .about:
                 VStack(spacing: 12) {
-                    Image(systemName: "photo.on.rectangle").font(.system(size: 42))
+                    Image(nsImage: NSApplication.shared.applicationIconImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 80, height: 80)
                     Text("Picget").font(.largeTitle)
                     Text(tr("Your desktop. Your pictures.")).foregroundStyle(.secondary)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -220,17 +215,40 @@ struct Management: View {
         }
     }
 
-    private var widgets: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(tr("Widgets")).font(.title2.bold())
+    private var toolbar: some View {
+        HStack(spacing: 10) {
+            if navigation.page == .widgets {
+                Text(tr("Widgets")).font(.title3.weight(.semibold))
                 Spacer()
                 Toggle(tr("Edit Desktop"), isOn: $library.editing).toggleStyle(.button)
                 Button { replacing = nil; navigation.importing = true } label: {
                     Label(tr("Add Widget"), systemImage: "plus")
-                }.keyboardShortcut("n")
-            }.padding()
-            Divider()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut("n")
+            } else {
+                Button { navigation.page = .widgets } label: {
+                    Label(tr("Widgets"), systemImage: "chevron.left")
+                }
+                Text(tr(navigation.page.rawValue)).font(.title3.weight(.semibold))
+                Spacer()
+            }
+
+            Button {
+                navigation.page = navigation.page == .settings ? .widgets : .settings
+            } label: {
+                Image(systemName: "gearshape")
+                    .frame(minWidth: 18)
+            }
+            .accessibilityLabel(tr("Settings"))
+            .help(tr("Settings"))
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+    }
+
+    private var widgets: some View {
+        VStack(spacing: 0) {
             if library.importing {
                 HStack {
                     if let progress = library.progress { ProgressView(value: progress) }
@@ -241,8 +259,18 @@ struct Management: View {
                 Divider()
             }
             if library.configuration.widgets.isEmpty {
-                ContentUnavailableView(tr("No Widgets"), systemImage: "photo.on.rectangle",
-                                       description: Text(tr("Add a picture or drop an image file here.")))
+                ContentUnavailableView {
+                    VStack(spacing: 8) {
+                        Image(nsImage: NSApplication.shared.applicationIconImage)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 56, height: 56)
+                            .accessibilityHidden(true)
+                        Text(tr("No Widgets"))
+                    }
+                } description: {
+                    Text(tr("Add a picture or drop an image file here."))
+                }
             } else {
                 HSplitView {
                     List(selection: $selection) {
@@ -264,7 +292,9 @@ struct Management: View {
                                 }.buttonStyle(.borderless).accessibilityLabel(tr(widget.visible ? "Hide widget" : "Show widget"))
                             }.tag(widget.id)
                         }
-                    }.frame(minWidth: 200, idealWidth: 235)
+                    }
+                    .listStyle(.sidebar)
+                    .frame(minWidth: 200, idealWidth: 225, maxWidth: 310)
                     if let widget = library.configuration.widgets.first(where: { $0.id == selection }) {
                         inspector(widget).frame(minWidth: 300)
                     } else {
@@ -273,6 +303,9 @@ struct Management: View {
                     }
                 }
             }
+        }
+        .onChange(of: library.configuration.widgets.map(\.id), initial: true) { _, ids in
+            if selection.map(ids.contains) != true { selection = ids.first }
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first, url.isFileURL else { return false }
@@ -309,38 +342,39 @@ struct Management: View {
         .disabled(maximum == 0)
     }
 
+    private func inspectorPreview(_ widget: Widget) -> some View {
+        Thumbnail(asset: widget.asset, size: 208)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func dimension(_ widget: Widget, alongWidth: Bool) -> Binding<Double> {
+        Binding(get: {
+            let current = library.configuration.widgets.first { $0.id == widget.id } ?? widget
+            let size = Displays.position(current).size
+            return alongWidth ? size.width : size.height
+        }, set: { value in
+            guard let current = library.configuration.widgets.first(where: { $0.id == widget.id }),
+                  library.editing || !current.locked else { return }
+            var frame = Displays.position(current)
+            let screen = Displays.screen(for: frame)
+            let limit = screen?.visibleFrame.size ?? CGSize(width: 8192, height: 8192)
+            frame.size = Widget.resized(frame.size, to: value, alongWidth: alongWidth,
+                                        locked: current.aspectLocked, limit: limit)
+            library.move(widget.id, to: frame, on: screen)
+        })
+    }
+
     private func inspector(_ widget: Widget) -> some View {
         Form {
-            Section(tr("Image")) {
-                Thumbnail(asset: widget.asset, size: 96)
-                TextField(tr("Name"), text: field(widget, \.name))
-                Text("\(Int(widget.frame.width)) × \(Int(widget.frame.height)) pt")
-                HStack {
-                    Button(tr("Replace Image…")) { replacing = widget.id; navigation.importing = true }
-                    if let remote = widget.remote {
-                        Button(tr("Refresh Image")) { library.add(remote, replacing: widget.id, remote: true) }
-                    }
-                }
-            }
-            Section(tr("Appearance")) {
-                Slider(value: field(widget, \.opacity), in: 0...1) { Text(tr("Opacity")) }
-                radiusControl(widget)
-                Picker(tr("Content mode"), selection: field(widget, \.mode)) {
-                    ForEach(ContentMode.allCases, id: \.self) { Text(tr($0.rawValue.capitalized)) }
-                }
-                if widget.mode == .crop {
-                    Slider(value: field(widget, \.zoom), in: 1...4) { Text(tr("Zoom")) }
-                    Slider(value: field(widget, \.cropX), in: -1...1) { Text(tr("Horizontal crop")) }
-                    Slider(value: field(widget, \.cropY), in: -1...1) { Text(tr("Vertical crop")) }
-                }
-                Button(tr("Reset Appearance")) {
-                    library.change(widget.id) {
-                        $0.opacity = 1; $0.radius = 0; $0.mode = .fit
-                        $0.zoom = 1; $0.cropX = 0; $0.cropY = 0
-                    }
-                }
-            }
+            inspectorPreview(widget)
             Section(tr("Position")) {
+                TextField(tr("Width (pt)"), value: dimension(widget, alongWidth: true), format: .number)
+                    .disabled(widget.locked && !library.editing)
+                TextField(tr("Height (pt)"), value: dimension(widget, alongWidth: false), format: .number)
+                    .disabled(widget.locked && !library.editing)
+                Toggle(tr("Lock aspect ratio"), isOn: field(widget, \.aspectLocked))
                 if let screen = Displays.screen(for: Displays.position(widget)) {
                     PositionPad(frame: Displays.position(widget), screen: screen,
                                 enabled: library.editing || !widget.locked) { frame in
@@ -353,14 +387,43 @@ struct Management: View {
                     }
                 }
             }
+            Section(tr("Appearance")) {
+                Slider(value: field(widget, \.opacity), in: 0...1) { Text(tr("Opacity")) }
+                radiusControl(widget)
+                DisclosureGroup(tr("Content mode")) {
+                    Picker(tr("Content mode"), selection: field(widget, \.mode)) {
+                        ForEach(ContentMode.allCases, id: \.self) { Text(tr($0.rawValue.capitalized)) }
+                    }
+                    if widget.mode == .crop {
+                        Slider(value: field(widget, \.zoom), in: 1...4) { Text(tr("Zoom")) }
+                        Slider(value: field(widget, \.cropX), in: -1...1) { Text(tr("Horizontal crop")) }
+                        Slider(value: field(widget, \.cropY), in: -1...1) { Text(tr("Vertical crop")) }
+                    }
+                }
+                Button(tr("Reset Appearance")) {
+                    library.change(widget.id) {
+                        $0.opacity = 1; $0.radius = 0; $0.mode = .fit
+                        $0.zoom = 1; $0.cropX = 0; $0.cropY = 0
+                    }
+                }
+            }
+            Section(tr("Image")) {
+                TextField(tr("Name"), text: field(widget, \.name))
+                Text("\(Int(widget.frame.width)) × \(Int(widget.frame.height)) pt")
+                HStack {
+                    Button(tr("Replace Image…")) { replacing = widget.id; navigation.importing = true }
+                    if let remote = widget.remote {
+                        Button(tr("Refresh Image")) { library.add(remote, replacing: widget.id, remote: true) }
+                    }
+                }
+            }
             Section(tr("Interaction")) {
                 Toggle(tr("Lock position"), isOn: field(widget, \.locked))
                 Toggle(tr("Click-through"), isOn: field(widget, \.clickThrough))
-                Toggle(tr("Lock aspect ratio"), isOn: field(widget, \.aspectLocked))
 
             }
             if library.configuration.assets[widget.asset]?.animated == true {
-                Section(tr("GIF Playback")) {
+                DisclosureGroup(tr("GIF Playback")) {
                     Picker(tr("Timing"), selection: field(widget, \.playback)) {
                         Text(tr("Original Timing")).tag(PlaybackMode.original)
                         Text(tr("Custom FPS Limit")).tag(PlaybackMode.capped)
@@ -505,7 +568,7 @@ private struct Thumbnail: View {
         .frame(width: size, height: size)
         .task(id: asset) {
             image = nil
-            let result = await library.thumbnail(asset)
+            let result = await library.thumbnail(asset, pixels: size > 128 ? 512 : 128)
             if !Task.isCancelled { image = result }
         }
         .accessibilityHidden(true)
@@ -630,6 +693,9 @@ enum InterfaceLanguage: String {
         "Opacity": "ความทึบ",
         "Corner radius": "รัศมีมุมโค้ง",
         "Content mode": "รูปแบบการจัดภาพ",
+        "Width (pt)": "ความกว้าง (pt)",
+        "Height (pt)": "ความสูง (pt)",
+        "Stretch": "ยืดเต็มกรอบ",
         "Fit": "พอดีกรอบ",
         "Fill": "เต็มกรอบ",
         "Crop": "ครอบตัด",

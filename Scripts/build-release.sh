@@ -4,7 +4,8 @@ cd "$(dirname "$0")/.."
 mkdir -p .build/module-cache
 export CLANG_MODULE_CACHE_PATH="$PWD/.build/module-cache"
 app="$PWD/build/Picget.app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp Resources/Picget.icns "$app/Contents/Resources/"
 swiftc -module-cache-path "$CLANG_MODULE_CACHE_PATH" -target arm64-apple-macos14.0 \
   -strict-concurrency=complete -O -whole-module-optimization -g \
   Picget/*.swift -o "$app/Contents/MacOS/Picget"
@@ -17,6 +18,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>NSPrincipalClass</key><string>NSApplication</string>
 <key>CFBundleExecutable</key><string>Picget</string>
 <key>CFBundleIdentifier</key><string>app.picget.desktop</string>
+<key>CFBundleIconFile</key><string>Picget.icns</string>
 <key>CFBundleName</key><string>Picget</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
