@@ -19,6 +19,7 @@ enum PicgetApp {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var library: Library?
+    private let updater = Updater()
     private var status: NSStatusItem?
     private var window: NSWindow?
     private let navigation = Navigation()
@@ -56,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Toggle Edit Widgets", #selector(edit)), ("Show All Widgets", #selector(showAll)),
             ("Hide All Widgets", #selector(hideAll)), ("Pause or Resume All GIFs", #selector(pause)),
             ("Toggle Low Power Mode", #selector(togglePower)), ("Settings…", #selector(settings)),
+            ("Check for Updates…", #selector(checkUpdates)),
             ("About Picget", #selector(about)), ("Quit Picget", #selector(quit))
         ] {
             let item = menu.addItem(withTitle: title, action: selector, keyEquivalent: "")
@@ -65,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         for (title, selector, shortcut) in [
             ("About Picget", #selector(about), ""),
+            ("Check for Updates…", #selector(checkUpdates), ""),
             ("Settings…", #selector(settings), ","),
             ("Quit Picget", #selector(quit), "q")
         ] {
@@ -76,10 +79,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appItem.submenu = appMenu
         NSApplication.shared.mainMenu = menuBar
         setStandard(UserDefaults.standard.object(forKey: "standard") as? Bool ?? true)
+        updater.onUpdateAvailable = { [weak self] in self?.open(.about) }
         if idleBenchmark {
             measureIdle()
-        } else if UserDefaults.standard.object(forKey: "openAtLaunch") as? Bool ?? true {
-            manage()
+        } else {
+            if UserDefaults.standard.object(forKey: "openAtLaunch") as? Bool ?? true {
+                manage()
+            }
+            if UserDefaults.standard.object(forKey: "autoCheckUpdates") as? Bool ?? true {
+                updater.check(manual: false)
+            }
         }
     }
 
@@ -143,7 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             created.isReleasedWhenClosed = false
             created.contentView = NSHostingView(rootView: Management(setStandard: { [weak self] in
                 self?.setStandard($0)
-            }).environmentObject(library).environmentObject(navigation))
+            }).environmentObject(library).environmentObject(navigation).environmentObject(updater))
             created.center()
             window = created
         }
@@ -159,6 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func pause() { library?.paused.toggle() }
     @objc private func togglePower() { if let library { library.power = library.power == .on ? .off : .on } }
     @objc private func settings() { open(.settings) }
+    @objc private func checkUpdates() { open(.about); updater.check(manual: true) }
     @objc private func about() { open(.about) }
     @objc private func quit() { NSApplication.shared.terminate(nil) }
 }
@@ -177,6 +187,7 @@ struct Management: View {
 
     @EnvironmentObject private var library: Library
     @EnvironmentObject private var navigation: Navigation
+    @EnvironmentObject private var updater: Updater
     @AppStorage("appearance") private var appearance = "System"
     @ViewState<UUID?> private var selection: UUID?
     @ViewState<UUID?> private var replacing: UUID?
@@ -197,13 +208,21 @@ struct Management: View {
                         .scaledToFit()
                         .frame(width: 80, height: 80)
                     Text("Picget").font(.largeTitle)
+                    Text("\(tr("Version")) \(Updater.currentVersion)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                     Text(tr("Your desktop. Your pictures.")).foregroundStyle(.secondary)
+                    UpdateControls()
+                        .padding(.top, 8)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .preferredColorScheme(appearance == "Dark" ? .dark : appearance == "Light" ? .light : nil)
         .sheet(isPresented: $navigation.importing, onDismiss: { replacing = nil }) {
             ImportImage(replacing: replacing)
+        }
+        .sheet(item: $updater.presentedRelease) { release in
+            UpdateSheet(release: release)
         }
         .alert("Picget", isPresented: Binding(get: { library.error != nil }, set: { if !$0 { library.error = nil } })) {
             Button(tr("OK")) { library.error = nil }
@@ -402,7 +421,7 @@ struct Management: View {
                 }
                 Button(tr("Reset Appearance")) {
                     library.change(widget.id) {
-                        $0.opacity = 1; $0.radius = 0; $0.mode = .fit
+                        $0.opacity = 1; $0.radius = 22; $0.mode = .fill
                         $0.zoom = 1; $0.cropX = 0; $0.cropY = 0
                     }
                 }
@@ -500,8 +519,10 @@ struct Preferences: View {
     private func tr(_ key: String) -> String { language.text(key) }
 
     @EnvironmentObject private var library: Library
+    @EnvironmentObject private var updater: Updater
     @AppStorage("standard") private var standard = true
     @AppStorage("openAtLaunch") private var openAtLaunch = true
+    @AppStorage("autoCheckUpdates") private var autoCheckUpdates = true
     @AppStorage("appearance") private var appearance = "System"
     @AppStorage("defaultFPS") private var defaultFPS = 20.0
     @ViewState<SMAppService.Status> private var login = SMAppService.mainApp.status
@@ -546,7 +567,140 @@ struct Preferences: View {
                     ForEach(["System", "Light", "Dark"], id: \.self) { Text(tr($0)).tag($0) }
                 }
             }
+            Section(tr("Updates")) {
+                Toggle(tr("Check for updates automatically"), isOn: $autoCheckUpdates)
+                HStack {
+                    Text("\(tr("Current version")): \(Updater.currentVersion)")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    UpdateControls(compact: true)
+                }
+            }
         }.formStyle(.grouped)
+    }
+}
+
+private struct UpdateControls: View {
+    @AppStorage("interfaceLanguage") private var language = InterfaceLanguage.english
+    private func tr(_ key: String) -> String { language.text(key) }
+
+    @EnvironmentObject private var updater: Updater
+    var compact = false
+
+    var body: some View {
+        VStack(alignment: compact ? .trailing : .center, spacing: 8) {
+            HStack(spacing: 10) {
+                Button(tr("Check for Updates…")) {
+                    updater.check(manual: true)
+                }
+                .disabled(updater.state.isBusy)
+
+                if !compact {
+                    Button(tr("GitHub Releases")) {
+                        NSWorkspace.shared.open(Updater.releasesPageURL)
+                    }
+                }
+            }
+            statusView
+        }
+    }
+
+    @ViewBuilder
+    private var statusView: some View {
+        switch updater.state {
+        case .idle:
+            EmptyView()
+        case .checking:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text(tr("Checking GitHub for updates…")).font(.caption).foregroundStyle(.secondary)
+            }
+        case .upToDate(let version):
+            Text("\(tr("Picget is up to date.")) (\(version))")
+                .font(.caption).foregroundStyle(.secondary)
+        case .noReleases:
+            Text(tr("No releases published on GitHub yet."))
+                .font(.caption).foregroundStyle(.secondary)
+        case .available(let release):
+            Button("\(tr("Update available")): \(release.tagName)") {
+                updater.presentedRelease = release
+            }
+            .font(.caption)
+        case .downloading(let progress):
+            HStack(spacing: 6) {
+                ProgressView(value: progress).controlSize(.small).frame(width: 80)
+                Text(tr("Downloading update…")).font(.caption).foregroundStyle(.secondary)
+            }
+        case .installing:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text(tr("Installing update…")).font(.caption).foregroundStyle(.secondary)
+            }
+        case .failed(let message):
+            Text(tr(message)).font(.caption).foregroundStyle(.red)
+        }
+    }
+}
+
+private struct UpdateSheet: View {
+    @AppStorage("interfaceLanguage") private var language = InterfaceLanguage.english
+    private func tr(_ key: String) -> String { language.text(key) }
+
+    @EnvironmentObject private var updater: Updater
+    let release: Updater.Release
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(tr("Software Update")).font(.headline)
+            Text("\(tr("A new version of Picget is available:")) \(release.tagName) (\(tr("current")): \(Updater.currentVersion))")
+                .foregroundStyle(.secondary)
+            if let notes = release.body?.trimmingCharacters(in: .whitespacesAndNewlines), !notes.isEmpty {
+                ScrollView {
+                    Text(notes)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .frame(height: 150)
+                .padding(8)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+            }
+            switch updater.state {
+            case .downloading(let progress):
+                VStack(alignment: .leading, spacing: 6) {
+                    if let progress {
+                        ProgressView(value: progress)
+                    } else {
+                        ProgressView()
+                    }
+                    Text(tr("Downloading update…")).font(.caption).foregroundStyle(.secondary)
+                }
+            case .installing:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(tr("Installing update…")).font(.caption).foregroundStyle(.secondary)
+                }
+            case .failed(let message):
+                Text(tr(message)).font(.caption).foregroundStyle(.red)
+            default:
+                EmptyView()
+            }
+            HStack {
+                Button(tr("View on GitHub")) {
+                    NSWorkspace.shared.open(release.htmlURL)
+                }
+                Spacer()
+                Button(tr("Later")) {
+                    updater.dismissReleasePrompt()
+                }.keyboardShortcut(.cancelAction)
+                Button(tr(release.zipAsset != nil ? "Install and Relaunch" : "Open Download Page")) {
+                    updater.install(release)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(updater.state.isBusy)
+            }
+        }
+        .padding(24)
+        .frame(width: 440)
     }
 }
 
@@ -725,5 +879,29 @@ enum InterfaceLanguage: String {
         "Create Widget": "สร้างวิดเจ็ต",
         "Drag in the preview to move this widget.": "ลากในภาพตัวอย่างเพื่อย้ายวิดเจ็ต",
         "Unlock position or turn on Edit Desktop.": "ปลดล็อกตำแหน่งหรือเปิดโหมดแก้ไขเดสก์ท็อป",
+        "Check for Updates…": "ตรวจสอบอัปเดต…",
+        "Updates": "อัปเดต",
+        "Version": "เวอร์ชัน",
+        "Current version": "เวอร์ชันปัจจุบัน",
+        "current": "ปัจจุบัน",
+        "Check for updates automatically": "ตรวจสอบอัปเดตอัตโนมัติ",
+        "GitHub Releases": "หน้า Release บน GitHub",
+        "Checking GitHub for updates…": "กำลังตรวจสอบอัปเดตจาก GitHub…",
+        "Picget is up to date.": "Picget เป็นเวอร์ชันล่าสุดแล้ว",
+        "No releases published on GitHub yet.": "ยังไม่มีการเผยแพร่ Release บน GitHub",
+        "Update available": "มีอัปเดตใหม่",
+        "Software Update": "อัปเดตซอฟต์แวร์",
+        "A new version of Picget is available:": "พบ Picget เวอร์ชันใหม่:",
+        "Downloading update…": "กำลังดาวน์โหลดอัปเดต…",
+        "Installing update…": "กำลังติดตั้งอัปเดต…",
+        "View on GitHub": "ดูบน GitHub",
+        "Later": "ภายหลัง",
+        "Install and Relaunch": "ติดตั้งและเปิดแอปใหม่",
+        "Open Download Page": "เปิดหน้าดาวน์โหลด",
+        "Could not check GitHub for updates.": "ไม่สามารถตรวจสอบอัปเดตจาก GitHub ได้",
+        "Could not download the update from GitHub.": "ไม่สามารถดาวน์โหลดอัปเดตจาก GitHub ได้",
+        "Could not install the downloaded update.": "ไม่สามารถติดตั้งอัปเดตที่ดาวน์โหลดมาได้",
+        "Picget does not have permission to replace the app bundle.": "Picget ไม่มีสิทธิ์ในการเขียนทับไฟล์แอปพลิเคชัน",
+        "Update failed. Try downloading from GitHub.": "อัปเดตไม่สำเร็จ ลองดาวน์โหลดจาก GitHub โดยตรง",
     ]
 }

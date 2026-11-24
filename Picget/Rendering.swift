@@ -84,6 +84,7 @@ final class DesktopWindow: NSPanel {
         hasShadow = false
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
+        acceptsMouseMovedEvents = true
         // Keep the widget in place during Show Desktop.
         collectionBehavior = [.stationary, .ignoresCycle, .fullScreenNone]
         contentView = canvas
@@ -121,20 +122,8 @@ final class WidgetCanvas: NSView {
     var geometryChanged: ((CGRect) -> Void)?
     var dropped: ((URL) -> Void)?
 
-    private struct ResizeHandle: OptionSet {
-        let rawValue: Int
-        static let left   = ResizeHandle(rawValue: 1 << 0)
-        static let right  = ResizeHandle(rawValue: 1 << 1)
-        static let top    = ResizeHandle(rawValue: 1 << 2)
-        static let bottom = ResizeHandle(rawValue: 1 << 3)
-
-        static let topLeft: ResizeHandle = [.top, .left]
-        static let topRight: ResizeHandle = [.top, .right]
-        static let bottomLeft: ResizeHandle = [.bottom, .left]
-        static let bottomRight: ResizeHandle = [.bottom, .right]
-    }
-
-    private var anchor: (location: CGPoint, frame: CGRect, handle: ResizeHandle)?
+    private var anchor: (location: CGPoint, frame: CGRect, handle: ResizeEdge)?
+    private var trackingArea: NSTrackingArea?
 
     private static let nwseCursor: NSCursor = {
         let sel = Selector(("_windowResizeNorthWestSouthEastCursor"))
@@ -167,54 +156,105 @@ final class WidgetCanvas: NSView {
 
     required init?(coder: NSCoder) { return nil }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .mouseMoved, .cursorUpdate, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
     override func layout() {
         super.layout()
         layoutPicture()
-        window?.invalidateCursorRects(for: self)
     }
 
-    private func handle(at point: CGPoint) -> ResizeHandle {
-        let margin: CGFloat = 14
-        let onLeft = point.x <= margin
-        let onRight = point.x >= bounds.maxX - margin
-        let onBottom = point.y <= margin
-        let onTop = point.y >= bounds.maxY - margin
+    private var resizeZones: [(rect: CGRect, edge: ResizeEdge)] {
+        let w = bounds.width
+        let h = bounds.height
+        let minSide = min(w, h)
+        let edge = min(14, max(6, minSide / 4))
+        let radius = settings.effectiveRadius(in: bounds.size)
+        let corner = min(max(18, radius), minSide * 0.3)
+        guard w > corner * 2, h > corner * 2 else { return [] }
+        return [
+            (CGRect(x: 0, y: 0, width: corner, height: corner), .bottomLeft),
+            (CGRect(x: w - corner, y: 0, width: corner, height: corner), .bottomRight),
+            (CGRect(x: 0, y: h - corner, width: corner, height: corner), .topLeft),
+            (CGRect(x: w - corner, y: h - corner, width: corner, height: corner), .topRight),
+            (CGRect(x: corner, y: 0, width: w - corner * 2, height: edge), .bottom),
+            (CGRect(x: corner, y: h - edge, width: w - corner * 2, height: edge), .top),
+            (CGRect(x: 0, y: corner, width: edge, height: h - corner * 2), .left),
+            (CGRect(x: w - edge, y: corner, width: edge, height: h - corner * 2), .right)
+        ]
+    }
 
-        var result = ResizeHandle()
-        if onLeft { result.insert(.left) }
-        if onRight { result.insert(.right) }
-        if onBottom { result.insert(.bottom) }
-        if onTop { result.insert(.top) }
-        return result
+    private func handle(at point: CGPoint) -> ResizeEdge {
+        resizeZones.first(where: { $0.rect.contains(point) })?.edge ?? []
+    }
+
+    private func cursor(for handle: ResizeEdge) -> NSCursor? {
+        guard !handle.isEmpty else { return nil }
+        if #available(macOS 15.0, *) {
+            switch handle {
+            case .topLeft:     return .frameResize(position: .topLeft, directions: .all)
+            case .topRight:    return .frameResize(position: .topRight, directions: .all)
+            case .bottomLeft:  return .frameResize(position: .bottomLeft, directions: .all)
+            case .bottomRight: return .frameResize(position: .bottomRight, directions: .all)
+            case .left:        return .frameResize(position: .left, directions: .all)
+            case .right:       return .frameResize(position: .right, directions: .all)
+            case .top:         return .frameResize(position: .top, directions: .all)
+            case .bottom:      return .frameResize(position: .bottom, directions: .all)
+            default:           break
+            }
+        }
+        switch handle {
+        case .topLeft, .bottomRight: return Self.nwseCursor
+        case .topRight, .bottomLeft: return Self.neswCursor
+        case .left, .right:          return .resizeLeftRight
+        case .top, .bottom:          return .resizeUpDown
+        default:                     return nil
+        }
+    }
+
+    private func updateCursor(for event: NSEvent) {
+        if let anchor {
+            (cursor(for: anchor.handle) ?? .arrow).set()
+            return
+        }
+        guard editing || !settings.locked else {
+            NSCursor.arrow.set()
+            return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        (cursor(for: handle(at: point)) ?? .arrow).set()
     }
 
     override func resetCursorRects() {
         super.resetCursorRects()
         guard editing || !settings.locked else { return }
 
-        let margin: CGFloat = 14
-        let w = bounds.width
-        let h = bounds.height
-        guard w > margin * 2, h > margin * 2 else { return }
-
-        // Corners
-        addCursorRect(CGRect(x: 0, y: 0, width: margin, height: margin), cursor: Self.neswCursor) // Bottom-left
-        addCursorRect(CGRect(x: w - margin, y: 0, width: margin, height: margin), cursor: Self.nwseCursor) // Bottom-right
-        addCursorRect(CGRect(x: 0, y: h - margin, width: margin, height: margin), cursor: Self.nwseCursor) // Top-left
-        addCursorRect(CGRect(x: w - margin, y: h - margin, width: margin, height: margin), cursor: Self.neswCursor) // Top-right
-
-        // Edges
-        addCursorRect(CGRect(x: margin, y: 0, width: w - margin * 2, height: margin), cursor: .resizeUpDown) // Bottom
-        addCursorRect(CGRect(x: margin, y: h - margin, width: w - margin * 2, height: margin), cursor: .resizeUpDown) // Top
-        addCursorRect(CGRect(x: 0, y: margin, width: margin, height: h - margin * 2), cursor: .resizeLeftRight) // Left
-        addCursorRect(CGRect(x: w - margin, y: margin, width: margin, height: h - margin * 2), cursor: .resizeLeftRight) // Right
+        for (rect, edge) in resizeZones {
+            if let cursor = cursor(for: edge) {
+                addCursorRect(rect, cursor: cursor)
+            }
+        }
     }
 
     func layoutPicture() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
+        let interactive = (editing || !settings.locked) && (!settings.clickThrough || editing)
+        // Non-zero alpha lets WindowServer deliver hover/drag events on transparent Fit margins.
+        layer?.backgroundColor = interactive ? CGColor(gray: 0, alpha: 0.004) : nil
         layer?.cornerRadius = settings.effectiveRadius(in: bounds.size)
+        window?.invalidateCursorRects(for: self)
         guard imageSize.width > 0, imageSize.height > 0, bounds.width > 0, bounds.height > 0 else { return }
         if settings.mode == .stretch {
             picture.frame = bounds
@@ -234,64 +274,50 @@ final class WidgetCanvas: NSView {
 
     var isDragging: Bool { anchor != nil }
 
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { editing }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { editing || !settings.locked }
+
+    override func mouseEntered(with event: NSEvent) {
+        updateCursor(for: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateCursor(for: event)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        updateCursor(for: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard anchor == nil else { return }
+        NSCursor.arrow.set()
+    }
 
     override func mouseDown(with event: NSEvent) {
         guard editing || !settings.locked, let window else { return }
         let point = convert(event.locationInWindow, from: nil)
         let matchedHandle = handle(at: point)
         anchor = (NSEvent.mouseLocation, window.frame, matchedHandle)
+        if let cursor = cursor(for: matchedHandle) { cursor.set() }
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard let anchor, let window else { return }
         let delta = NSEvent.mouseLocation - anchor.location
-        var frame = anchor.frame
-
-        if !anchor.handle.isEmpty {
-            let initialAspectRatio = anchor.frame.width / max(1, anchor.frame.height)
-
-            // Horizontal resize
-            if anchor.handle.contains(.right) {
-                frame.size.width = max(48, anchor.frame.width + delta.x)
-            } else if anchor.handle.contains(.left) {
-                let newWidth = max(48, anchor.frame.width - delta.x)
-                frame.origin.x = anchor.frame.maxX - newWidth
-                frame.size.width = newWidth
-            }
-
-            // Vertical resize
-            if anchor.handle.contains(.bottom) {
-                let newHeight = max(48, anchor.frame.height - delta.y)
-                frame.origin.y = anchor.frame.maxY - newHeight
-                frame.size.height = newHeight
-            } else if anchor.handle.contains(.top) {
-                frame.size.height = max(48, anchor.frame.height + delta.y)
-            }
-
-            // Aspect lock constraint
-            if settings.aspectLocked {
-                if anchor.handle.contains(.left) || anchor.handle.contains(.right) {
-                    let targetHeight = max(48, frame.size.width / initialAspectRatio)
-                    if anchor.handle.contains(.bottom) {
-                        frame.origin.y = anchor.frame.maxY - targetHeight
-                    }
-                    frame.size.height = targetHeight
-                } else if anchor.handle.contains(.top) || anchor.handle.contains(.bottom) {
-                    let targetWidth = max(48, frame.size.height * initialAspectRatio)
-                    frame.size.width = targetWidth
-                }
-            }
-        } else {
-            frame.origin.x += delta.x
-            frame.origin.y += delta.y
-        }
+        let frame = Widget.draggedFrame(
+            from: anchor.frame,
+            delta: delta,
+            edges: anchor.handle,
+            freeCorner: event.modifierFlags.contains(.shift)
+        )
+        if let cursor = cursor(for: anchor.handle) { cursor.set() }
         window.setFrame(frame, display: true)
     }
 
     override func mouseUp(with event: NSEvent) {
         guard anchor != nil, let window else { return }
         anchor = nil
+        updateCursor(for: event)
         geometryChanged?(window.frame)
     }
 

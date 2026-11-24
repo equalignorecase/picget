@@ -1,6 +1,23 @@
 import Foundation
 import CoreGraphics
 
+struct ResizeEdge: OptionSet {
+    let rawValue: Int
+    static let left   = ResizeEdge(rawValue: 1 << 0)
+    static let right  = ResizeEdge(rawValue: 1 << 1)
+    static let top    = ResizeEdge(rawValue: 1 << 2)
+    static let bottom = ResizeEdge(rawValue: 1 << 3)
+
+    static let topLeft: ResizeEdge = [.top, .left]
+    static let topRight: ResizeEdge = [.top, .right]
+    static let bottomLeft: ResizeEdge = [.bottom, .left]
+    static let bottomRight: ResizeEdge = [.bottom, .right]
+
+    var isCorner: Bool {
+        (contains(.left) || contains(.right)) && (contains(.top) || contains(.bottom))
+    }
+}
+
 enum ContentMode: String, Codable, CaseIterable { case fit, fill, crop, stretch }
 enum PlaybackMode: String, Codable, CaseIterable { case original, capped, visible, paused, firstFrame }
 enum PowerMode: String, CaseIterable { case off, on, system }
@@ -14,7 +31,7 @@ struct Widget: Codable, Identifiable {
     var relativeOrigin: CGPoint?
     var opacity = 1.0
     var radius = 22.0
-    var mode = ContentMode.fit
+    var mode = ContentMode.fill
     var zoom = 1.0
     var cropX = 0.0
     var cropY = 0.0
@@ -41,6 +58,44 @@ struct Widget: Codable, Identifiable {
         if alongWidth { result.width = min(limit.width, max(48, value)) }
         else { result.height = min(limit.height, max(48, value)) }
         return result
+    }
+
+    static func draggedFrame(from anchor: CGRect, delta: CGPoint, edges: ResizeEdge, freeCorner: Bool = false) -> CGRect {
+        guard !edges.isEmpty else {
+            return anchor.offsetBy(dx: delta.x, dy: delta.y)
+        }
+        let minimum = 48.0
+        var frame = anchor
+        if !edges.isCorner || freeCorner {
+            if edges.contains(.right) {
+                frame.size.width = max(minimum, anchor.width + delta.x)
+            } else if edges.contains(.left) {
+                frame.size.width = max(minimum, anchor.width - delta.x)
+                frame.origin.x = anchor.maxX - frame.width
+            }
+            if edges.contains(.top) {
+                frame.size.height = max(minimum, anchor.height + delta.y)
+            } else if edges.contains(.bottom) {
+                frame.size.height = max(minimum, anchor.height - delta.y)
+                frame.origin.y = anchor.maxY - frame.height
+            }
+            return frame
+        }
+
+        let targetWidth = edges.contains(.right) ? anchor.width + delta.x : anchor.width - delta.x
+        let targetHeight = edges.contains(.top) ? anchor.height + delta.y : anchor.height - delta.y
+        let scaleX = targetWidth / max(1, anchor.width)
+        let scaleY = targetHeight / max(1, anchor.height)
+        let minScale = max(minimum / max(1, anchor.width), minimum / max(1, anchor.height))
+        let dominantScale = abs(scaleX - 1) >= abs(scaleY - 1) ? scaleX : scaleY
+        let scale = max(minScale, dominantScale)
+
+        let width = anchor.width * scale
+        let height = anchor.height * scale
+        frame.size = CGSize(width: width, height: height)
+        if edges.contains(.left) { frame.origin.x = anchor.maxX - width }
+        if edges.contains(.bottom) { frame.origin.y = anchor.maxY - height }
+        return frame
     }
 
     static func maximumRadius(in size: CGSize) -> Double {
