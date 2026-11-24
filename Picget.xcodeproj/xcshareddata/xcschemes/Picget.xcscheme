@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Scheme version="1.7">
+  <BuildAction><BuildActionEntries>
+    <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="000000000000000000000005" BuildableName="Picget.app" BlueprintName="Picget" ReferencedContainer="container:Picget.xcodeproj"/></BuildActionEntry>
+  </BuildActionEntries></BuildAction>
+  <LaunchAction buildConfiguration="Debug"><BuildableProductRunnable><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="000000000000000000000005" BuildableName="Picget.app" BlueprintName="Picget" ReferencedContainer="container:Picget.xcodeproj"/></BuildableProductRunnable></LaunchAction>
+  <ProfileAction buildConfiguration="Release"><BuildableProductRunnable><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="000000000000000000000005" BuildableName="Picget.app" BlueprintName="Picget" ReferencedContainer="container:Picget.xcodeproj"/></BuildableProductRunnable></ProfileAction>
+  <AnalyzeAction buildConfiguration="Debug"/>
+  <ArchiveAction buildConfiguration="Release"/>
+</Scheme>
